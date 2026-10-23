@@ -1,11 +1,5 @@
 install/
 
-# Outillage des agents de production : worktrees et configuration locale.
-# .paperclip/worktrees/ contient un checkout complet par agent, à l'intérieur du
-# dépôt : sans cette règle, un « git add -A » y embarquerait tous les worktrees.
-.paperclip/
-.claude/
-
 # This directory is fetched during first build and is present in this directory
 subprojects/freeDiameter
 subprojects/libtins
@@ -13,3 +7,13 @@ subprojects/prometheus-client-c
 subprojects/usrsctp
 
 webui/.next
+
+# --- open5gs-Production (fork) -------------------------------------------------
+# Bloc ajouté par le fork, gardé en fin de fichier pour ne pas conflicter avec
+# les rétroportages amont.
+#
+# Outillage des agents de production. .paperclip/ contient notamment, sous
+# worktrees/, un checkout complet par agent à l'intérieur du dépôt : sans cette
+# règle, un « git add -A » les embarquerait tous.
+.paperclip/
+.claude/

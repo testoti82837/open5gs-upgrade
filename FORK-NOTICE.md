@@ -7,7 +7,8 @@ GNU Affero General Public License v3 (voir [LICENSE](LICENSE)) :
 > relevant date.
 >
 > b) The work must carry prominent notices stating that it is released under this
-> License and any conditions added under section 7.
+> License and any conditions added under section 7.  This requirement modifies the
+> requirement in section 4 to "keep intact all notices".
 
 ## Œuvre d'origine
 

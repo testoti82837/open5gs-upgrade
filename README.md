@@ -6,6 +6,7 @@ n'est publié ni par le projet Open5GS amont, ni par NewPlane.
 | | |
 | --- | --- |
 | Base du fork | tag amont `v2.8.0`, commit `157f611a530e292e40ec50f9d23f0ef5d4fcd6a6` |
+| Fork créé le | 2026-10-22 |
 | Branche de production | `production/v2.8.x` |
 | Licence | GNU AGPL v3 ou ultérieure — **inchangée** par rapport à l'amont |
 | Nature | durcissement pour déploiement d'opérateur (robustesse des entrées réseau, sécurité SBI, haute disponibilité, conformité 3GPP/GSMA) |
@@ -14,8 +15,8 @@ Détail des modifications et mentions légales : **[FORK-NOTICE.md](FORK-NOTICE.
 Règles de contribution et stratégie de branches : **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 Le texte ci-dessous est celui du projet Open5GS amont, conservé tel quel. Les liens
-de support, de sponsoring et de communauté qu'il contient renvoient vers l'amont et
-**ne couvrent pas ce fork**.
+de support, de sponsoring, de **licence commerciale** et de communauté qu'il contient
+renvoient vers l'amont et **ne couvrent pas ce fork**.
 
 ---
 
