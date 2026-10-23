@@ -79,6 +79,10 @@ int emm_handle_attach_request(enb_ue_t *enb_ue, mme_ue_t *mme_ue,
             sizeof(ogs_nas_eps_attach_type_t));
     mme_ue->nas_eps.type = MME_EPS_TYPE_ATTACH_REQUEST;
 
+    /* A new attach replaces the procedure an EIR answer may still be
+     * pending for */
+    mme_ue->eir_check_pending = false;
+
     ogs_debug("    ATTACH TYPE[%d] TSC[%d] KSI[%d] VALUE[%d]",
             mme_ue->nas_eps.type,
             mme_ue->nas_eps.attach.tsc,
@@ -132,7 +136,38 @@ int emm_handle_attach_request(enb_ue_t *enb_ue, mme_ue_t *mme_ue,
      */
     CLEAR_MME_UE_ALL_TIMERS(mme_ue);
 
-    CLEAR_EPS_BEARER_ID(mme_ue);
+    /*
+     * Do NOT unconditionally clear the EBI bitmap here.
+     *
+     * On re-attach with the same IMSI, mme_ue_find_by_message() reuses
+     * the existing mme_ue_t whose previous sessions and bearers may
+     * still be alive.  Clearing the bitmap while those bearer contexts
+     * exist breaks the invariant "EBI bits of live bearers are set in
+     * ebi_bitmap": the subsequent teardown of the old bearers then
+     * frees EBIs that are no longer marked allocated, and a new
+     * default-bearer allocation racing with the (asynchronous) old
+     * session deletion could hand out a duplicate EBI.
+     *
+     * EBI lifetime is owned by mme_ebi_alloc()/mme_ebi_free() on the
+     * bearer add/remove path.  When live sessions exist, let the old
+     * bearer teardown release the bits.  When no session exists, the
+     * bitmap must already be zero; a non-zero value indicates a leak,
+     * which we log and heal visibly instead of silently masking.
+     */
+    if (ogs_list_empty(&mme_ue->sess_list)) {
+        if (mme_ue->ebi_bitmap) {
+            ogs_error("[EBI-TRACK] STALE-BITMAP at Attach Request: "
+                    "no session but bitmap[0x%04x] ue_id[%d] IMSI[%s]",
+                    mme_ue->ebi_bitmap, mme_ue->id, mme_ue->imsi_bcd);
+            mme_ebi_track_dump(mme_ue, "STALE-BITMAP");
+            CLEAR_EPS_BEARER_ID(mme_ue);
+        }
+    } else {
+        ogs_info("[EBI-TRACK] Attach Request with live sessions: "
+                "keeping bitmap[0x%04x] ue_id[%d] IMSI[%s]; "
+                "old bearer teardown owns EBI release",
+                mme_ue->ebi_bitmap, mme_ue->id, mme_ue->imsi_bcd);
+    }
     CLEAR_SERVICE_INDICATOR(mme_ue);
     if (SECURITY_CONTEXT_IS_VALID(mme_ue)) {
         ogs_kdf_kenb(mme_ue->kasme, mme_ue->ul_count.i32, mme_ue->kenb);
@@ -240,7 +275,7 @@ int emm_handle_attach_request(enb_ue_t *enb_ue, mme_ue_t *mme_ue,
         ogs_nas_eps_imsi_to_bcd(
             &eps_mobile_identity->imsi, eps_mobile_identity->length,
             imsi_bcd);
-        mme_ue_set_imsi(mme_ue, imsi_bcd);
+        mme_ue_set_imsi(mme_ue, imsi_bcd, MME_UE_IMSI_FROM_ATTACH_REQUEST);
 
         ogs_info("    IMSI[%s]", imsi_bcd);
 
@@ -408,8 +443,11 @@ int emm_handle_authentication_response(
     CLEAR_MME_UE_TIMER(mme_ue->t3460);
 
     if (authentication_response_parameter->length == 0 ||
+        authentication_response_parameter->length != mme_ue->xres_len ||
         memcmp(authentication_response_parameter->res, mme_ue->xres,
-        authentication_response_parameter->length) != 0) {
+        mme_ue->xres_len) != 0) {
+        ogs_warn("Authentication failed [RES length:%d, XRES length:%d]",
+                authentication_response_parameter->length, mme_ue->xres_len);
         ogs_log_hexdump(OGS_LOG_WARN,
                 authentication_response_parameter->res,
                 authentication_response_parameter->length);
@@ -477,7 +515,7 @@ int emm_handle_identity_response(
 
         ogs_nas_eps_imsi_to_bcd(
             &mobile_identity->imsi, mobile_identity->length, imsi_bcd);
-        mme_ue_set_imsi(mme_ue, imsi_bcd);
+        mme_ue_set_imsi(mme_ue, imsi_bcd, MME_UE_IMSI_FROM_IDENTITY_RESPONSE);
 
         if (mme_ue->imsi_len != OGS_MAX_IMSI_LEN) {
             ogs_error("Invalid IMSI LEN[%d]", mme_ue->imsi_len);
@@ -823,7 +861,7 @@ int emm_handle_tau_request(
                 MME_UE_HAVE_IMSI(mme_ue)
                     ? mme_ue->imsi_bcd : "Unknown");
 
-        memcpy(&mme_ue->next.guti,
+        memcpy(&mme_ue->old_guti,
            &nas_guti, sizeof(ogs_nas_eps_guti_t));
 
         break;
@@ -953,10 +991,15 @@ int emm_handle_security_mode_complete(
              * IMEISV(16 digits) ==> 8bytes
              */
             if (imeisv->length == sizeof(ogs_nas_mobile_identity_imeisv_t)) {
+                if (ogs_nas_imeisv_to_bcd(&imeisv->imeisv, imeisv->length,
+                            mme_ue->imeisv_bcd) != OGS_OK) {
+                    ogs_error("[%s] Invalid IMEISV encoding", mme_ue->imsi_bcd);
+                    ogs_log_hexdump(OGS_LOG_ERROR,
+                            (unsigned char *)&imeisv->imeisv, imeisv->length);
+                    break;
+                }
                 memcpy(&mme_ue->nas_mobile_identity_imeisv,
                     &imeisv->imeisv, imeisv->length);
-                ogs_nas_imeisv_to_bcd(&imeisv->imeisv, imeisv->length,
-                        mme_ue->imeisv_bcd);
                 ogs_bcd_to_buffer(mme_ue->imeisv_bcd,
                         mme_ue->imeisv, &mme_ue->imeisv_len);
                 ogs_nas_imeisv_bcd_to_buffer(mme_ue->imeisv_bcd,
@@ -971,7 +1014,7 @@ int emm_handle_security_mode_complete(
             }
             break;
         default:
-            ogs_warn("Invalid IMEISV Type[%d]", imeisv->imeisv.type);
+            ogs_error("Invalid IMEISV Type[%d]", imeisv->imeisv.type);
             break;
 
         }

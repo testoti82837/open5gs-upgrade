@@ -65,6 +65,8 @@ const ogs_sbi_server_actions_t ogs_mhd_server_actions = {
 
     xact_attach,
     xact_detach,
+    /* This backend does not expose a verified TLS client certificate. */
+    NULL, /* peer_certificate */
 };
 
 static void run(short when, ogs_socket_t fd, void *data);
@@ -150,7 +152,11 @@ static ogs_sbi_session_t *session_add(ogs_sbi_server_t *server,
     ogs_assert(connection);
 
     ogs_pool_id_calloc(&session_pool, &sbi_sess);
-    ogs_assert(sbi_sess);
+    if (!sbi_sess) {
+        ogs_error("Maximum number of sessions [%d] reached",
+                ogs_pool_size(&session_pool));
+        return NULL;
+    }
 
     sbi_sess->server = server;
     sbi_sess->request = request;
@@ -594,9 +600,11 @@ static _MHD_Result access_handler(
         size_t *upload_data_size,
         void **con_cls)
 {
+    int rv;
     ogs_sbi_server_t *server = NULL;
     ogs_sbi_request_t *request = NULL;
     ogs_sbi_session_t *sbi_sess = NULL;
+    ogs_pool_id_t sbi_sess_id = OGS_INVALID_POOL_ID;
 
     server = cls;
     ogs_assert(server);
@@ -609,8 +617,11 @@ static _MHD_Result access_handler(
     }
 
     if (!request) {
-        request = ogs_sbi_request_new();
-        ogs_assert(request);
+        request = ogs_sbi_request_new_incoming();
+        if (!request) {
+            ogs_error("ogs_sbi_request_new_incoming() failed");
+            return MHD_NO;
+        }
         *con_cls = request;
 
         ogs_assert(request->http.params);
@@ -682,15 +693,30 @@ static _MHD_Result access_handler(
     }
 
 suspend:
+    sbi_sess = session_add(server, request, connection);
+    if (!sbi_sess) {
+        ogs_error("session_add() failed [%s] %s", method, url);
+        return MHD_NO;
+    }
+    sbi_sess_id = sbi_sess->id;
+
     MHD_suspend_connection(connection);
     request->suspended = true;
 
-    sbi_sess = session_add(server, request, connection);
-    ogs_assert(sbi_sess);
-
     ogs_assert(server->cb);
-    if (server->cb(request, OGS_UINT_TO_POINTER(sbi_sess->id)) != OGS_OK) {
+    rv = server->cb(request, OGS_UINT_TO_POINTER(sbi_sess_id));
+    if (rv != OGS_OK) {
         ogs_warn("server callback error");
+
+        /* The callback may have sent a response and removed the session. */
+        sbi_sess = ogs_pool_find_by_id(&session_pool, sbi_sess_id);
+        if (!sbi_sess) {
+            ogs_error("The server callback already sent a response but "
+                    "returned an error; it must return OGS_OK instead [%d]",
+                    sbi_sess_id);
+            return MHD_YES;
+        }
+
         ogs_assert(true ==
                 ogs_sbi_server_send_error((ogs_sbi_stream_t *)sbi_sess,
                     OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
@@ -710,7 +736,11 @@ static void notify_completed(
 {
     ogs_sbi_request_t *request = *con_cls;
 
-    ogs_assert(request);
+    if (!request) {
+        ogs_error("MHD request completed without request context [reason:%d]",
+                toe);
+        return;
+    }
     if (request->poll.write)
         ogs_pollset_remove(request->poll.write);
 

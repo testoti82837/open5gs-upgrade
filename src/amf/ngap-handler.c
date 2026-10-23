@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019,2020 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2026 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -792,6 +792,9 @@ void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                 NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
+        /* Release the RAN-UE context allocated above before returning,
+         * otherwise a malformed InitialUEMessage can exhaust ran_ue_pool. */
+        ran_ue_remove(ran_ue);
         return;
     }
 
@@ -803,6 +806,7 @@ void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                 NGAP_Cause_PR_protocol, NGAP_CauseProtocol_unspecified);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
+        ran_ue_remove(ran_ue);
         return;
     }
 
@@ -812,6 +816,7 @@ void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                 NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
+        ran_ue_remove(ran_ue);
         return;
     }
 
@@ -824,6 +829,7 @@ void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                 NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
+        ran_ue_remove(ran_ue);
         return;
     }
 
@@ -832,6 +838,16 @@ void ngap_handle_initial_ue_message(amf_gnb_t *gnb, ogs_ngap_message_t *message)
      * or associate this RAN UE with the AMF UE.
      */
     if (amf_ue) {
+        if (amf_ue->registration_session_release_pending) {
+            ogs_error("[%s] Ignore new NG context while registration session "
+                    "release is pending", amf_ue->supi);
+            r = ngap_send_ran_ue_context_release_command(ran_ue,
+                    NGAP_Cause_PR_nas, NGAP_CauseNas_normal_release,
+                    NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
+            ogs_expect(r == OGS_OK);
+            ogs_assert(r != OGS_ERROR);
+            return;
+        }
         /* If NAS(amf_ue_t) has already been associated with
          * older NG(ran_ue_t) context */
         if (CM_CONNECTED(amf_ue)) {
@@ -1200,8 +1216,6 @@ void ngap_handle_initial_context_setup_response(
             (long long)ran_ue->ran_ue_ngap_id,
             (long long)ran_ue->amf_ue_ngap_id);
 
-    ran_ue->initial_context_setup_response_received = true;
-
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
         /*
@@ -1220,6 +1234,22 @@ void ngap_handle_initial_context_setup_response(
         ogs_assert(r != OGS_ERROR);
         return;
     }
+
+    if (!RAN_UE_IS_SERVING(amf_ue, ran_ue)) {
+        ogs_error("InitialContextSetupResponse on non-serving NG context "
+                "[AMF_UE_NGAP_ID:%lld] "
+                "[ran_ue:%d serving:%d rel_action:%d]",
+                (long long)ran_ue->amf_ue_ngap_id,
+                ran_ue->id, amf_ue->ran_ue_id, ran_ue->ue_ctx_rel_action);
+        r = ngap_send_error_indication2(ran_ue,
+                NGAP_Cause_PR_protocol,
+                NGAP_CauseProtocol_message_not_compatible_with_receiver_state);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    ran_ue->initial_context_setup_response_received = true;
 
     for (i = 0; PDUSessionList && i < OGS_ASN_LIST_COUNT(PDUSessionList); i++) {
         PDUSessionItem = (NGAP_PDUSessionResourceSetupItemCxtRes_t *)
@@ -1719,6 +1749,17 @@ void ngap_handle_ue_context_release_request(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
+    /* Do not use ngap_find_ran_ue_by_message_ue_ids() here. */
+
+    if (!RAN_UE_NGAP_ID) {
+        ogs_error("No RAN_UE_NGAP_ID");
+        r = ngap_send_error_indication(gnb, NULL, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     if (!AMF_UE_NGAP_ID) {
         ogs_error("No AMF_UE_NGAP_ID");
         r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
@@ -1747,10 +1788,44 @@ void ngap_handle_ue_context_release_request(
         return;
     }
 
+    /*
+     * This procedure intentionally reports an unknown RAN UE context
+     * at warning level below, while the generic helper reports it as an error.
+     */
     ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
     if (!ran_ue) {
         ogs_warn("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
                 (long long)amf_ue_ngap_id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    if (ran_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)ran_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    if (ran_ue->ran_ue_ngap_id != *RAN_UE_NGAP_ID) {
+        ogs_error("Invalid RAN_UE_NGAP_ID[%lld] for "
+                "AMF_UE_NGAP_ID[%lld] [expected:%lld]",
+                (long long)*RAN_UE_NGAP_ID,
+                (long long)amf_ue_ngap_id,
+                (long long)ran_ue->ran_ue_ngap_id);
         r = ngap_send_error_indication(
                 gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
                 NGAP_Cause_PR_radioNetwork,
@@ -1905,6 +1980,17 @@ void ngap_handle_ue_context_release_complete(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
+    /* Do not use ngap_find_ran_ue_by_message_ue_ids() here. */
+
+    if (!RAN_UE_NGAP_ID) {
+        ogs_error("No RAN_UE_NGAP_ID");
+        r = ngap_send_error_indication(gnb, NULL, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     if (!AMF_UE_NGAP_ID) {
         ogs_error("No AMF_UE_NGAP_ID");
         r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
@@ -1946,6 +2032,31 @@ void ngap_handle_ue_context_release_complete(
         return;
     }
 
+    if (ran_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)ran_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    /*
+     * Do not add the RAN UE NGAP ID consistency check used by
+     * ngap_find_ran_ue_by_message_ue_ids():
+     *
+     *     if (ran_ue->ran_ue_ngap_id != *RAN_UE_NGAP_ID)
+     *
+     * UEContextReleaseComplete is resolved by AMF_UE_NGAP_ID. Keep the
+     * existing completion behavior after verifying that the sender gNB owns
+     * the resolved RAN UE context.
+     */
     ngap_handle_ue_context_release_action(ran_ue);
 }
 
@@ -1979,6 +2090,7 @@ void ngap_handle_ue_context_release_action(ran_ue_t *ran_ue)
     switch (ran_ue->ue_ctx_rel_action) {
     case NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE:
         ogs_debug("    Action: NG context remove");
+        amf_sbi_send_deactivate_stale_user_plane(ran_ue);
         ran_ue_remove(ran_ue);
         break;
     case NGAP_UE_CTX_REL_NG_REMOVE_AND_UNLINK:
@@ -2163,6 +2275,20 @@ void ngap_handle_pdu_session_resource_setup_response(
                 NGAP_Cause_PR_radioNetwork,
                 NGAP_CauseRadioNetwork_unspecified,
                 NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    if (!RAN_UE_IS_SERVING(amf_ue, ran_ue)) {
+        ogs_error("PDUSessionResourceSetupResponse on non-serving NG context "
+                "[AMF_UE_NGAP_ID:%lld] "
+                "[ran_ue:%d serving:%d rel_action:%d]",
+                (long long)ran_ue->amf_ue_ngap_id,
+                ran_ue->id, amf_ue->ran_ue_id, ran_ue->ue_ctx_rel_action);
+        r = ngap_send_error_indication2(ran_ue,
+                NGAP_Cause_PR_protocol,
+                NGAP_CauseProtocol_message_not_compatible_with_receiver_state);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2984,12 +3110,23 @@ void ngap_handle_path_switch_request(
         return;
     }
 
+    if (!PDUSessionResourceToBeSwitchedDLList) {
+        ogs_error("No PDUSessionResourceToBeSwitchedDLList");
+        r = ngap_send_error_indication(gnb,
+                (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
     if (!ran_ue) {
         ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
                 (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+        r = ngap_send_path_switch_failure(
+                gnb, *RAN_UE_NGAP_ID, amf_ue_ngap_id,
+                PDUSessionResourceToBeSwitchedDLList,
                 NGAP_Cause_PR_radioNetwork,
                 NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
         ogs_expect(r == OGS_OK);
@@ -3001,10 +3138,36 @@ void ngap_handle_path_switch_request(
     if (!amf_ue) {
         ogs_error("Cannot find AMF-UE Context [%lld]",
                 (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        r = ngap_send_path_switch_failure(
+                gnb, *RAN_UE_NGAP_ID, amf_ue_ngap_id,
+                PDUSessionResourceToBeSwitchedDLList,
                 NGAP_Cause_PR_radioNetwork,
                 NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    /*
+     * When the NG association of the source gNB is lost,
+     * amf_gnb_remove() frees the gNB at once, but ran_ue stays
+     * until the SMF confirms the user-plane deactivation started by
+     * amf_sbi_send_deactivate_all_ue_in_gnb(). A PathSwitchRequest
+     * arriving in this window refers to an NG context that is being
+     * released, so it is not switched to the target gNB.
+     * ran_ue_switch_to_gnb() also requires the source gNB.
+     */
+    if (!amf_gnb_find_by_id(ran_ue->gnb_id)) {
+        ogs_error("[%d] gNB has already been removed : "
+                "RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld]",
+                ran_ue->gnb_id,
+                (long long)ran_ue->ran_ue_ngap_id,
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_path_switch_failure(
+                gnb, *RAN_UE_NGAP_ID, amf_ue_ngap_id,
+                PDUSessionResourceToBeSwitchedDLList,
+                NGAP_Cause_PR_protocol,
+                NGAP_CauseProtocol_message_not_compatible_with_receiver_state);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -3050,20 +3213,11 @@ void ngap_handle_path_switch_request(
         return;
     }
 
-    if (!PDUSessionResourceToBeSwitchedDLList) {
-        ogs_error("No PDUSessionResourceToBeSwitchedDLList");
-        r = ngap_send_error_indication(gnb,
-                (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
     if (!SECURITY_CONTEXT_IS_VALID(amf_ue)) {
         ogs_error("No Security Context");
-        r = ngap_send_error_indication(gnb,
-                (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+        r = ngap_send_path_switch_failure(
+                gnb, *RAN_UE_NGAP_ID, amf_ue_ngap_id,
+                PDUSessionResourceToBeSwitchedDLList,
                 NGAP_Cause_PR_nas, NGAP_CauseNas_authentication_failure);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
@@ -3442,6 +3596,21 @@ void ngap_handle_handover_required(
         return;
     }
 
+    if (source_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)source_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     ogs_debug("    Source : RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld] ",
         (long long)source_ue->ran_ue_ngap_id,
         (long long)source_ue->amf_ue_ngap_id);
@@ -3573,6 +3742,8 @@ void ngap_handle_handover_required(
         return;
     }
 
+    amf_ue->ho_attempted++;
+
     target_ue = ran_ue_find_by_id(source_ue->target_ue_id);
     if (target_ue) {
     /*
@@ -3661,6 +3832,8 @@ void ngap_handle_handover_required(
                     NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+            source_ue_deassociate_target_ue(target_ue);
+            ran_ue_remove(target_ue);
             return;
         }
 
@@ -3671,6 +3844,8 @@ void ngap_handle_handover_required(
                     NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+            source_ue_deassociate_target_ue(target_ue);
+            ran_ue_remove(target_ue);
             return;
         }
 
@@ -3681,6 +3856,8 @@ void ngap_handle_handover_required(
                     NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+            source_ue_deassociate_target_ue(target_ue);
+            ran_ue_remove(target_ue);
             return;
         }
 
@@ -3693,6 +3870,8 @@ void ngap_handle_handover_required(
                     NGAP_CauseRadioNetwork_unknown_PDU_session_ID);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+            source_ue_deassociate_target_ue(target_ue);
+            ran_ue_remove(target_ue);
             return;
         }
 
@@ -3704,6 +3883,8 @@ void ngap_handle_handover_required(
                     NGAP_CauseRadioNetwork_unknown_PDU_session_ID);
             ogs_expect(r == OGS_OK);
             ogs_assert(r != OGS_ERROR);
+            source_ue_deassociate_target_ue(target_ue);
+            ran_ue_remove(target_ue);
             return;
         }
 
@@ -3849,23 +4030,27 @@ void ngap_handle_handover_request_ack(
         return;
     }
 
-    if (!RAN_UE_NGAP_ID) {
-        ogs_error("No RAN_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, NULL, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+    if (target_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)target_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
     }
-
-    target_ue->ran_ue_ngap_id = *RAN_UE_NGAP_ID;
 
     source_ue = ran_ue_find_by_id(target_ue->source_ue_id);
     if (!source_ue) {
         ogs_error("Cannot find Source-UE Context [%lld]",
                 (long long)amf_ue_ngap_id);
         r = ngap_send_error_indication(
-                gnb, &target_ue->ran_ue_ngap_id, &target_ue->amf_ue_ngap_id,
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &target_ue->amf_ue_ngap_id,
                 NGAP_Cause_PR_radioNetwork,
                 NGAP_CauseRadioNetwork_inconsistent_remote_UE_NGAP_ID);
         ogs_expect(r == OGS_OK);
@@ -3877,13 +4062,20 @@ void ngap_handle_handover_request_ack(
         ogs_error("Cannot find AMF-UE Context [%lld]",
                 (long long)amf_ue_ngap_id);
         r = ngap_send_error_indication(
-                gnb, &target_ue->ran_ue_ngap_id, &target_ue->amf_ue_ngap_id,
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &target_ue->amf_ue_ngap_id,
                 NGAP_Cause_PR_radioNetwork,
                 NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
     }
+
+    /*
+     * The RAN UE NGAP ID assigned by the target gNB is stored only after
+     * the sender is confirmed to own the Target-UE context and the
+     * Source-UE/AMF-UE contexts have been resolved.
+     */
+    target_ue->ran_ue_ngap_id = *RAN_UE_NGAP_ID;
 
     ogs_debug("    Source : RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld] ",
         (long long)source_ue->ran_ue_ngap_id,
@@ -4076,6 +4268,21 @@ void ngap_handle_handover_failure(
         return;
     }
 
+    if (target_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)target_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, NULL, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     source_ue = ran_ue_find_by_id(target_ue->source_ue_id);
     if (!source_ue) {
         ogs_error("Cannot find Source-UE Context [%lld]",
@@ -4107,6 +4314,11 @@ void ngap_handle_handover_failure(
     }
     ogs_debug("    Cause[Group:%d Cause:%d]",
             Cause->present, (int)Cause->choice.radioNetwork);
+
+    if (source_ue->amf_ue_id != OGS_INVALID_POOL_ID) {
+        amf_ue_t *failed_ue = amf_ue_find_by_id(source_ue->amf_ue_id);
+        if (failed_ue) failed_ue->ho_rejected++;
+    }
 
     r = ngap_send_handover_preparation_failure(source_ue, Cause);
     ogs_expect(r == OGS_OK);
@@ -4211,6 +4423,21 @@ void ngap_handle_handover_cancel(
         return;
     }
 
+    if (source_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)source_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     target_ue = ran_ue_find_by_id(source_ue->target_ue_id);
     if (!target_ue) {
         ogs_error("Cannot find Source-UE Context [%lld]",
@@ -4224,6 +4451,7 @@ void ngap_handle_handover_cancel(
         return;
     }
     amf_ue = amf_ue_find_by_id(source_ue->amf_ue_id);
+    if (amf_ue) amf_ue->ho_rejected++;
     if (!amf_ue) {
         ogs_error("Cannot find AMF-UE Context [%lld]",
                 (long long)amf_ue_ngap_id);
@@ -4362,6 +4590,21 @@ void ngap_handle_uplink_ran_status_transfer(
     if (!source_ue) {
         ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
                 (long long)amf_ue_ngap_id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
+    if (source_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)source_ue->gnb_id,
+                (unsigned long long)gnb->id);
         r = ngap_send_error_indication(
                 gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
                 NGAP_Cause_PR_radioNetwork,
@@ -4514,6 +4757,21 @@ void ngap_handle_handover_notification(
         return;
     }
 
+    if (target_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)target_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
+
     source_ue = ran_ue_find_by_id(target_ue->source_ue_id);
     if (!source_ue) {
         ogs_error("Cannot find Source-UE Context [%lld]",
@@ -4590,6 +4848,8 @@ void ngap_handle_handover_notification(
     ogs_debug("    Target : TAC[%d] CellID[0x%llx]",
         target_ue->saved.nr_tai.tac.v,
         (long long)target_ue->saved.nr_cgi.cell_id);
+
+    amf_ue->ho_completed++;
 
     /* Copy Stream-No/TAI/ECGI from ran_ue */
     amf_ue->gnb_ostream_id = target_ue->gnb_ostream_id;
@@ -5142,6 +5402,25 @@ void ngap_handle_ng_reset(
 
             ogs_assert(ran_ue);
 
+            if (ran_ue->gnb_id != gnb->id) {
+                ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                        "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                        (long long)ran_ue->amf_ue_ngap_id,
+                        (unsigned long long)ran_ue->gnb_id,
+                        (unsigned long long)gnb->id);
+                continue;
+            }
+
+            if (item->aMF_UE_NGAP_ID && item->rAN_UE_NGAP_ID &&
+                    ran_ue->ran_ue_ngap_id != *item->rAN_UE_NGAP_ID) {
+                ogs_error("Invalid RAN_UE_NGAP_ID[%lld] for "
+                        "AMF_UE_NGAP_ID[%lld] [expected:%lld]",
+                        (long long)*item->rAN_UE_NGAP_ID,
+                        (long long)ran_ue->amf_ue_ngap_id,
+                        (long long)ran_ue->ran_ue_ngap_id);
+                continue;
+            }
+
             /* RAN_UE Context where PartOfNG_interface was requested */
             ran_ue->part_of_ng_reset_requested = true;
 
@@ -5171,7 +5450,10 @@ void ngap_handle_ng_reset(
                             (long long)ran_ue->ran_ue_ngap_id);
             }
 
-            if (old_xact_count == new_xact_count) ran_ue_remove(ran_ue);
+            if (old_xact_count == new_xact_count) {
+                amf_sbi_send_deactivate_stale_user_plane(ran_ue);
+                ran_ue_remove(ran_ue);
+            }
         }
 
         ogs_list_for_each(&gnb->ran_ue_list, iter) {
@@ -5343,6 +5625,8 @@ void ngap_handle_error_indication(amf_gnb_t *gnb, ogs_ngap_message_t *message)
                             amf_self()->time.t3512.value + 240));
             }
         } else {
+            /* A held NG context: no AMF-UE is associated with it */
+            amf_sbi_send_deactivate_stale_user_plane(ran_ue);
             ran_ue_remove(ran_ue);
         }
     }

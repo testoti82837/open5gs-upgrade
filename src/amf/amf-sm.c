@@ -69,6 +69,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
     ogs_pool_id_t sbi_xact_id = OGS_INVALID_POOL_ID;
     int state = AMF_CREATE_SM_CONTEXT_NO_STATE;
     ogs_pool_id_t ran_ue_id = OGS_INVALID_POOL_ID;
+    ogs_pool_id_t target_ue_id = OGS_INVALID_POOL_ID;
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_request_t *sbi_request = NULL;
@@ -382,59 +383,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                     e->h.sbi.message = &sbi_message;
                     ogs_fsm_dispatch(&nf_instance->sm, e);
                 } else
-                    ogs_error("NF instance FSM has been finalized");
+                    ogs_warn("NF instance FSM has been finalized");
 
                 break;
 
             CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTIONS)
-                subscription_data = e->h.sbi.data;
-                ogs_assert(subscription_data);
-
-                SWITCH(sbi_message.h.method)
-                CASE(OGS_SBI_HTTP_METHOD_POST)
-                    if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_CREATED ||
-                        sbi_message.res_status == OGS_SBI_HTTP_STATUS_OK) {
-                        ogs_nnrf_nfm_handle_nf_status_subscribe(
-                                subscription_data, &sbi_message);
-                    } else {
-                        ogs_error("HTTP response error : %d",
-                                sbi_message.res_status);
-                    }
-                    break;
-
-                CASE(OGS_SBI_HTTP_METHOD_PATCH)
-                    if (sbi_message.res_status == OGS_SBI_HTTP_STATUS_OK ||
-                        sbi_message.res_status ==
-                            OGS_SBI_HTTP_STATUS_NO_CONTENT) {
-                        ogs_nnrf_nfm_handle_nf_status_update(
-                                subscription_data, &sbi_message);
-                    } else {
-                        ogs_error("[%s] HTTP response error [%d]",
-                                subscription_data->id ?
-                                    subscription_data->id : "Unknown",
-                                sbi_message.res_status);
-                    }
-                    break;
-
-                CASE(OGS_SBI_HTTP_METHOD_DELETE)
-                    if (sbi_message.res_status ==
-                            OGS_SBI_HTTP_STATUS_NO_CONTENT)
-                        ogs_info("[%s] Subscription deleted",
-                                subscription_data->id ?
-                                    subscription_data->id : "Unknown");
-                    else
-                        ogs_error("[%s] HTTP response error [%d]",
-                                subscription_data->id ?
-                                    subscription_data->id : "Unknown",
-                                sbi_message.res_status);
-
-                    ogs_sbi_subscription_data_remove(subscription_data);
-                    break;
-
-                DEFAULT
-                    ogs_error("Invalid HTTP method [%s]", sbi_message.h.method);
-                    ogs_assert_if_reached();
-                END
+                ogs_nnrf_nfm_handle_nf_status_subscription_response(
+                        &sbi_message, e->h.sbi.data);
                 break;
             
             DEFAULT
@@ -489,6 +444,7 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         case OpenAPI_service_name_nudm_sdm:
         case OpenAPI_service_name_npcf_am_policy_control:
         case OpenAPI_service_name_namf_comm:
+        case OpenAPI_service_name_n5g_eir_eic:
             sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
                     sbi_xact_id <= OGS_MAX_POOL_ID);
@@ -550,6 +506,8 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
 
                 if (ctx->ran_ue_id != OGS_INVALID_POOL_ID)
                     ran_ue_id = ctx->ran_ue_id;
+                if (ctx->target_ue_id != OGS_INVALID_POOL_ID)
+                    target_ue_id = ctx->target_ue_id;
             }
 
             ogs_sbi_xact_remove(sbi_xact);
@@ -606,7 +564,8 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             SWITCH(sbi_message.h.resource.component[2])
             CASE(OGS_SBI_RESOURCE_NAME_MODIFY)
                 amf_nsmf_pdusession_handle_update_sm_context(
-                        amf_ue, ran_ue, sess, state, &sbi_message);
+                        amf_ue, ran_ue, sess, state, target_ue_id,
+                        &sbi_message);
                 break;
 
             CASE(OGS_SBI_RESOURCE_NAME_RELEASE)
@@ -617,6 +576,12 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
                 } else {
                     ogs_error("[%s:%d] HTTP response error [%d]",
                             amf_ue->supi, sess->psi, sbi_message.res_status);
+                    if (state ==
+                            AMF_RELEASE_SM_CONTEXT_AUTHENTICATED_REGISTRATION) {
+                        amf_sbi_fail_registration_session_release(
+                                amf_ue, ran_ue, sbi_message.res_status);
+                        break;
+                    }
                 }
                 amf_nsmf_pdusession_handle_release_sm_context(
                         amf_ue, ran_ue, sess, state);
@@ -719,9 +684,15 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         case OGS_TIMER_NF_INSTANCE_HEARTBEAT_INTERVAL:
         case OGS_TIMER_NF_INSTANCE_NO_HEARTBEAT:
         case OGS_TIMER_NF_INSTANCE_VALIDITY:
-            nf_instance = e->h.sbi.data;
-            ogs_assert(nf_instance);
+            nf_instance = ogs_sbi_nf_instance_find_by_pool_id(
+                    OGS_POINTER_TO_UINT(e->h.sbi.data));
+            if (!nf_instance) {
+                ogs_error("NF Instance has already been removed [%d]",
+                        (int)OGS_POINTER_TO_UINT(e->h.sbi.data));
+                break;
+            }
             ogs_assert(OGS_FSM_STATE(&nf_instance->sm));
+            e->h.sbi.data = nf_instance;
 
             ogs_sbi_self()->nf_instance->load = amf_instance_get_load();
 
@@ -733,8 +704,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
 
         case OGS_TIMER_SUBSCRIPTION_VALIDITY:
-            subscription_data = e->h.sbi.data;
-            ogs_assert(subscription_data);
+            subscription_data = ogs_sbi_subscription_data_find_by_pool_id(
+                    OGS_POINTER_TO_UINT(e->h.sbi.data));
+            if (!subscription_data) {
+                ogs_error("Subscription has already been removed [%d]",
+                        (int)OGS_POINTER_TO_UINT(e->h.sbi.data));
+                break;
+            }
 
             ogs_error("[%s] Subscription validity expired",
                     subscription_data->id ?
@@ -749,8 +725,13 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
             break;
 
         case OGS_TIMER_SUBSCRIPTION_PATCH:
-            subscription_data = e->h.sbi.data;
-            ogs_assert(subscription_data);
+            subscription_data = ogs_sbi_subscription_data_find_by_pool_id(
+                    OGS_POINTER_TO_UINT(e->h.sbi.data));
+            if (!subscription_data) {
+                ogs_error("Subscription has already been removed [%d]",
+                        (int)OGS_POINTER_TO_UINT(e->h.sbi.data));
+                break;
+            }
 
             if (ogs_nnrf_nfm_send_nf_status_update(subscription_data) != true)
                 ogs_error("[%s] NF status subscription update failed",
@@ -966,6 +947,128 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
         }
 
         amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
+
+        if (amf_ue && amf_ue->registration_session_release_pending) {
+            ogs_error("[%s] Ignore NAS message while registration session "
+                    "release is pending", amf_ue->supi);
+            ogs_pkbuf_free(pkbuf);
+            break;
+        }
+
+        /*
+         * REGISTRATION REQUEST on an NG context that already belongs to
+         * someone else. The 5GS counterpart of the same defect in the
+         * MME, see mme-sm.c.
+         *
+         *   InitialUEMessage(5G-S-TMSI of A) -> ran_ue bound to A
+         *   Registration Request(SUCI of B) on the same connection
+         *     -> dispatched to A's context, not to B's
+         *
+         * The identity in the message is never looked at, so
+         * amf_ue_set_suci() re-labels A's context as B and
+         * amf_ue_release_old_context() moves B's sessions into it. If A
+         * still owns sessions, that hits
+         *
+         *     ogs_assert(ogs_list_empty(&amf_ue->sess_list));
+         *
+         * and the AMF aborts. If B is unknown to the AMF there is no
+         * abort - A's sessions silently become B's instead.
+         *
+         * Any UE can get here; a stale 5G-GUTI is enough.
+         *
+         * So re-resolve the identity, and if it names someone else:
+         *
+         *   registered, or owns a session -> release, drop the message
+         *   otherwise                     -> leave it, nothing to lose
+         *
+         * Release is the same teardown a RAN-initiated UE Context
+         * Release Request gets: deactivate the sessions towards the SMF,
+         * then release the NG context. Handing the NG context over
+         * instead would leave A's user plane on a connection that now
+         * serves B.
+         *
+         * A UE Context Transfer can leave a context with a SUPI and no
+         * SUCI, so either index counts as an identity.
+         */
+        if (amf_ue &&
+            (AMF_UE_HAVE_SUCI(amf_ue) || AMF_UE_HAVE_SUPI(amf_ue)) &&
+            nas_message.gmm.h.message_type ==
+                OGS_NAS_5GS_REGISTRATION_REQUEST) {
+            amf_ue_t *registering_ue = amf_ue_find_by_message(&nas_message);
+
+            if (registering_ue != amf_ue &&
+                (OGS_FSM_CHECK(&amf_ue->sm, gmm_state_registered) ||
+                 ogs_list_count(&amf_ue->sess_list))) {
+                int old_xact_count = 0, new_xact_count = 0;
+
+                ogs_warn("Registration Request identity does not match "
+                        "the associated NG context");
+                ogs_warn("    Associated SUCI[%s] SUPI[%s] ue_id[%d] "
+                        "sessions[%d]",
+                        amf_ue->suci ? amf_ue->suci : "Unknown",
+                        amf_ue->supi ? amf_ue->supi : "Unknown",
+                        amf_ue->id, ogs_list_count(&amf_ue->sess_list));
+                if (registering_ue)
+                    ogs_warn("    Requested SUCI[%s] SUPI[%s] ue_id[%d] "
+                            "sessions[%d]",
+                            registering_ue->suci ?
+                                registering_ue->suci : "Unknown",
+                            registering_ue->supi ?
+                                registering_ue->supi : "Unknown",
+                            registering_ue->id,
+                            ogs_list_count(&registering_ue->sess_list));
+                else
+                    ogs_warn("    Requested identity has no AMF-UE "
+                            "context yet");
+                ogs_warn("    RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld]",
+                        (long long)ran_ue->ran_ue_ngap_id,
+                        (long long)ran_ue->amf_ue_ngap_id);
+
+                /* Same teardown as a RAN-initiated release request */
+                CLEAR_AMF_UE_ALL_TIMERS(amf_ue);
+
+                old_xact_count = amf_sess_xact_count(amf_ue);
+
+                ran_ue->deactivation.group = NGAP_Cause_PR_nas;
+                ran_ue->deactivation.cause = NGAP_CauseNas_normal_release;
+
+                amf_sbi_send_deactivate_all_sessions(
+                        ran_ue, amf_ue, AMF_UPDATE_SM_CONTEXT_DEACTIVATED,
+                        NGAP_Cause_PR_nas, NGAP_CauseNas_normal_release);
+
+                new_xact_count = amf_sess_xact_count(amf_ue);
+
+                if (old_xact_count == new_xact_count) {
+                    /*
+                     * Nothing was sent to the SMF, so release from here.
+                     * Which action depends on what we are keeping:
+                     *
+                     *   registered -> NG_REMOVE_AND_UNLINK
+                     *                 de-associates the RAN-UE and runs
+                     *                 the mobile reachable timer, which
+                     *                 is what ages the context out
+                     *   otherwise  -> NG_CONTEXT_REMOVE, as in
+                     *                 ngap_handle_initial_context_setup_
+                     *                 failure(); the mobile reachable
+                     *                 timer is only handled in the
+                     *                 de-registered and registered
+                     *                 states, so starting it here would
+                     *                 fire into a state that ignores it
+                     */
+                    r = ngap_send_ran_ue_context_release_command(ran_ue,
+                            NGAP_Cause_PR_nas, NGAP_CauseNas_normal_release,
+                            OGS_FSM_CHECK(&amf_ue->sm, gmm_state_registered) ?
+                                NGAP_UE_CTX_REL_NG_REMOVE_AND_UNLINK :
+                                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
+                }
+
+                ogs_pkbuf_free(pkbuf);
+                break;
+            }
+        }
+
         if (!amf_ue) {
             amf_ue = amf_ue_find_by_message(&nas_message);
             if (!amf_ue) {
@@ -984,6 +1087,17 @@ void amf_state_operational(ogs_fsm_t *s, amf_event_t *e)
 
                 ogs_assert(CM_IDLE(amf_ue));
             } else {
+                if (amf_ue->registration_session_release_pending) {
+                    ogs_error("[%s] Ignore new NG context while registration "
+                            "session release is pending", amf_ue->supi);
+                    r = ngap_send_ran_ue_context_release_command(ran_ue,
+                            NGAP_Cause_PR_nas, NGAP_CauseNas_normal_release,
+                            NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
+                    ogs_pkbuf_free(pkbuf);
+                    break;
+                }
                 /* Here, if the AMF_UE Context is found,
                  * the integrity check is not performed
                  * For example, REGISTRATION_REQUEST, SERVICE_REQUEST message
