@@ -1,5 +1,11 @@
 install/
 
+# Outillage des agents de production : worktrees et configuration locale.
+# .paperclip/worktrees/ contient un checkout complet par agent, à l'intérieur du
+# dépôt : sans cette règle, un « git add -A » y embarquerait tous les worktrees.
+.paperclip/
+.claude/
+
 # This directory is fetched during first build and is present in this directory
 subprojects/freeDiameter
 subprojects/libtins

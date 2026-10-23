@@ -1,3 +1,24 @@
+# open5gs-Production
+
+**Ce dépôt est un fork modifié d'[Open5GS](https://github.com/open5gs/open5gs).** Il
+n'est publié ni par le projet Open5GS amont, ni par NewPlane.
+
+| | |
+| --- | --- |
+| Base du fork | tag amont `v2.8.0`, commit `157f611a530e292e40ec50f9d23f0ef5d4fcd6a6` |
+| Branche de production | `production/v2.8.x` |
+| Licence | GNU AGPL v3 ou ultérieure — **inchangée** par rapport à l'amont |
+| Nature | durcissement pour déploiement d'opérateur (robustesse des entrées réseau, sécurité SBI, haute disponibilité, conformité 3GPP/GSMA) |
+
+Détail des modifications et mentions légales : **[FORK-NOTICE.md](FORK-NOTICE.md)**.
+Règles de contribution et stratégie de branches : **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
+Le texte ci-dessous est celui du projet Open5GS amont, conservé tel quel. Les liens
+de support, de sponsoring et de communauté qu'il contient renvoient vers l'amont et
+**ne couvrent pas ce fork**.
+
+---
+
 <p align="center"><a href="https://open5gs.org" target="_blank" rel="noopener noreferrer"><img width="100" src="https://open5gs.org/assets/img/open5gs-logo-only.png" alt="Open5GS logo"></a></p>
 
 ## Getting Started
