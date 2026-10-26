@@ -15,6 +15,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+libcares_dep = dependency('libcares', required : false)
+libmme_c_args = []
+
 libmme_sources = files('''
     mme-event.h
     mme-timer.h
@@ -28,6 +31,7 @@ libmme_sources = files('''
     sgsap-path.h
     mme-fd-path.h
     mme-s6a-handler.h
+    mme-s13-handler.h
     nas-security.h
     nas-path.h
     emm-handler.h
@@ -43,6 +47,8 @@ libmme_sources = files('''
     sbc-handler.h
     mme-sm.h
     mme-path.h
+    mme-dns-select.h
+    mme-dns.h
     metrics.h
 
     mme-init.c
@@ -62,6 +68,7 @@ libmme_sources = files('''
     sgsap-path.c
     mme-fd-path.c
     mme-s6a-handler.c
+    mme-s13-handler.c
     nas-security.c
     nas-path.c
     emm-sm.c
@@ -77,6 +84,7 @@ libmme_sources = files('''
     mme-s11-handler.c
     mme-sm.c
     mme-path.c
+    mme-dns-select.c
     sbc-handler.c
     metrics.c
     enb-info.c
@@ -84,15 +92,23 @@ libmme_sources = files('''
     ../../lib/metrics/prometheus/json_pager.c
 '''.split())
 
+if libcares_dep.found()
+    libmme_sources += files('mme-dns.c')
+    libmme_c_args += '-DMME_HAVE_CARES=1'
+endif
+
 libmme = static_library('mme',
     sources : libmme_sources,
+    c_args : libmme_c_args,
     dependencies : [libmetrics_dep,
                     libsctp_dep,
                     libs1ap_dep,
                     libnas_eps_dep,
                     libdiameter_s6a_dep,
+                    libdiameter_s13_dep,
                     libgtp_dep,
-                    libsbi_dep],
+                    libsbi_dep,
+                    libcares_dep],
     install : false)
 
 libmme_dep = declare_dependency(
@@ -102,8 +118,10 @@ libmme_dep = declare_dependency(
                     libs1ap_dep,
                     libnas_eps_dep,
                     libdiameter_s6a_dep,
+                    libdiameter_s13_dep,
                     libsbi_dep,
-                    libgtp_dep])
+                    libgtp_dep,
+                    libcares_dep])
 
 mme_sources = files('''
     app-init.c
