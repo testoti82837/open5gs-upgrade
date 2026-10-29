@@ -9,12 +9,166 @@ subprojects/.wraplock
 
 webui/.next
 
-# --- open5gs-Production (fork) -------------------------------------------------
-# Bloc ajouté par le fork, gardé en fin de fichier pour ne pas conflicter avec
-# les rétroportages amont.
+# ===========================================================================
+# Fork open5gs-Production — début des règles propres au fork.
 #
-# Outillage des agents de production. .paperclip/ contient notamment, sous
-# worktrees/, un checkout complet par agent à l'intérieur du dépôt : sans cette
-# règle, un « git add -A » les embarquerait tous.
-.paperclip/
-.claude/
+# Tout ce qui précède vient de l'amont et reste identique octet pour octet,
+# y compris les lignes que l'amont ajoute après v2.8.0 et que les fusions de
+# suivi apportent : c'est ce qui permet à un `git am` de rétroportage, ou à
+# une fusion de `open5gs:main`, de ne pas conflicter sur ce fichier. Toute
+# nouvelle règle se met ci-dessous.
+#
+# Le dépôt de fork est public. Les motifs sont donc larges par défaut et
+# rouverts par exception explicite là où l'amont versionne déjà des fichiers
+# qui y correspondent. Chaque exception est justifiée sur place.
+#
+# Le bruit propre à la machine de développement (runtime Paperclip sous
+# .paperclip/, réglages Claude Code locaux, paquets .deb/.rpm téléchargés)
+# n'est pas ici : il est dans .git/info/exclude, non versionné et partagé par
+# l'arbre principal et tous les worktrees quelle que soit leur branche. Ces
+# chemins relèvent de l'environnement d'exécution, pas du projet open5gs.
+# Corollaire : .claude/settings.json, configuration partagée des 9 agents,
+# redevient versionnable — plus aucune règle ne l'exclut.
+# ===========================================================================
+
+# --- Build meson / ninja hors arbre ----------------------------------------
+# Ancrés à la racine : `build/` nu masquerait docker/build/, versionné par
+# l'amont (Dockerfile, setup.sh).
+/build/
+/build-*/
+/builddir/
+/_build/
+/out/
+.ninja_deps
+.ninja_log
+build.ninja
+compile_commands.json
+meson-info/
+meson-logs/
+meson-private/
+# Créé par meson au premier build, sans être ignoré par l'amont
+# (subprojects/.wraplock l'est déjà, en tête de fichier).
+subprojects/packagecache/
+
+# --- Objets, bibliothèques, binaires ---------------------------------------
+*.o
+*.lo
+*.a
+*.la
+*.so
+*.so.[0-9]*
+*.dylib
+*.dll
+*.exe
+*.gch
+*.pch
+
+# --- Vidages mémoire --------------------------------------------------------
+# Un motif `core` nu masquerait lib/core/ — 80 fichiers du coeur de la
+# bibliothèque. Ancré à la racine, plus les noms suffixés par le PID.
+/core
+core.[0-9]*
+vgcore.*
+*.core
+
+# --- Sanitizers et couverture (F1.3) ----------------------------------------
+asan.log*
+ubsan.log*
+lsan.log*
+tsan.log*
+msan.log*
+*.gcda
+*.gcno
+*.gcov
+*.profraw
+*.profdata
+lcov.info
+coverage.info
+/coverage/
+
+# --- Fuzzing : reproducteurs et corpus (F2.6, TES-28) -----------------------
+# libFuzzer nomme ses reproducteurs `<catégorie>-<sha1 hexadécimal>`. La
+# classe [0-9a-f] est indispensable : un `crash-*` nu masquerait les quatre
+# tests/*/crash-test.c versionnés par l'amont.
+crash-[0-9a-f]*
+leak-[0-9a-f]*
+timeout-[0-9a-f]*
+oom-[0-9a-f]*
+slow-unit-[0-9a-f]*
+fuzz-*.log
+/corpus/
+/fuzz-corpus/
+
+# --- Captures réseau (F2.2, F2.3) -------------------------------------------
+*.pcap
+*.pcapng
+*.cap
+*.erf
+# Exception : les 11 captures de documentation versionnées par l'amont.
+!docs/assets/pcapng/**
+
+# --- Journaux et état d'exécution des NF ------------------------------------
+*.log
+/log/
+*.pid
+*.sock
+
+# --- Matériel cryptographique (F4.1) ----------------------------------------
+# Règle large, et volontairement : une clé privée poussée sur un dépôt public
+# y est publiée définitivement, la révoquer ne la retire pas de l'historique.
+*.key
+*.pem
+*.crt
+*.cer
+*.csr
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ecdsa*
+id_ed25519*
+.env
+.env.*
+# Exception : l'amont versionne 56 clés et certificats de démonstration dans
+# ces deux répertoires (50 et 6). Sans cette réouverture, tout fichier que
+# F4.1 (TES-29) y dépose disparaîtrait silencieusement de `git status` — et
+# c'est précisément son répertoire de travail. La règle large ci-dessus
+# protège le reste de l'arbre.
+!configs/open5gs/tls/**
+!configs/open5gs/hnet/**
+
+# --- Résidus de rétroportage (F1.6 à F1.9) ----------------------------------
+# `git am` / `git apply` laissent *.rej et *.orig ; `git format-patch` produit
+# des *.patch et des *.mbox qui sont des fichiers de travail, pas du code. Si
+# un ticket a besoin de versionner une rustine, la forcer avec `git add -f`.
+*.orig
+*.rej
+*.patch
+*.diff
+*.mbox
+*.bak
+*~
+
+# --- Python (outillage) -----------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Éditeurs, caches, systèmes de fichiers ---------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.cache/
+.ccache/
+tags
+TAGS
+.DS_Store
+Thumbs.db
