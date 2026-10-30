@@ -82,6 +82,13 @@ mme_metrics_spec_def_t mme_metrics_spec_def_global[_MME_METR_GLOB_MAX] = {
     .name = "dns_cache_hit",
     .description = "DNS lookups answered from the local cache",
 },
+[MME_METR_GLOB_CTR_DNS_HOME_PLMN_UNKNOWN] = {
+    .type = OGS_METRICS_METRIC_TYPE_COUNTER,
+    .name = "dns_home_plmn_unknown",
+    .description = "Home-routed PGW selections for which the home PLMN "
+                   "could not be derived from the IMSI "
+                   "(APN-FQDN built with the serving PLMN instead)",
+},
 };
 int mme_metrics_init_inst_global(void)
 {

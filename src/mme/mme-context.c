@@ -3307,6 +3307,24 @@ void mme_ue_clear_hss_identity(mme_ue_t *mme_ue)
     }
 }
 
+void mme_ue_set_apn_oi_replacement(
+        mme_ue_t *mme_ue, const char *apn_oi_replacement)
+{
+    char *new_value = NULL;
+
+    ogs_assert(mme_ue);
+
+    if (apn_oi_replacement && apn_oi_replacement[0]) {
+        new_value = ogs_strdup(apn_oi_replacement);
+        ogs_assert(new_value);
+    }
+
+    if (mme_ue->apn_oi_replacement)
+        ogs_free(mme_ue->apn_oi_replacement);
+
+    mme_ue->apn_oi_replacement = new_value;
+}
+
 mme_enb_t *mme_enb_add(ogs_sock_t *sock, ogs_sockaddr_t *addr)
 {
     mme_enb_t *enb = NULL;
@@ -4072,6 +4090,9 @@ void mme_ue_remove(mme_ue_t *mme_ue)
 
     /* Clear learned HSS identity */
     mme_ue_clear_hss_identity(mme_ue);
+
+    /* Clear UE-level APN-OI-Replacement */
+    mme_ue_set_apn_oi_replacement(mme_ue, NULL);
 
     /* Delete All Timers */
     CLEAR_MME_UE_ALL_TIMERS(mme_ue);
@@ -4974,6 +4995,11 @@ void mme_sess_set_session(mme_sess_t *sess, const ogs_session_t *session)
         /* Copy only the EPC fields populated by S6a/Gn. Framed routes are
          * delivered directly to the SMF and are not owned by the MME. */
         new_session->context_identifier = session->context_identifier;
+        if (session->apn_oi_replacement) {
+            new_session->apn_oi_replacement =
+                ogs_strdup(session->apn_oi_replacement);
+            ogs_assert(new_session->apn_oi_replacement);
+        }
         new_session->session_type = session->session_type;
         new_session->qos = session->qos;
         new_session->ambr = session->ambr;
@@ -4988,6 +5014,8 @@ void mme_sess_set_session(mme_sess_t *sess, const ogs_session_t *session)
 
     if (sess->session) {
         ogs_free(sess->session->name);
+        if (sess->session->apn_oi_replacement)
+            ogs_free(sess->session->apn_oi_replacement);
         ogs_free(sess->session);
     }
     sess->session = new_session;
@@ -5462,6 +5490,8 @@ void mme_session_remove_all(mme_ue_t *mme_ue)
     for (i = 0; i < mme_ue->num_of_session; i++) {
         if (mme_ue->session[i].name)
             ogs_free(mme_ue->session[i].name);
+        if (mme_ue->session[i].apn_oi_replacement)
+            ogs_free(mme_ue->session[i].apn_oi_replacement);
     }
     memset(mme_ue->session, 0, sizeof(mme_ue->session));
 

@@ -132,6 +132,12 @@ uint8_t mme_s6a_handle_ula(
 
     memcpy(&mme_ue->ambr, &subscription_data->ambr, sizeof(ogs_bitrate_t));
 
+    /* UE-level APN-OI-Replacement: a received value replaces the stored
+     * one (TS 29.272 7.3.2). The ULA carries the full subscription, so an
+     * absent AVP means the HSS has no UE-level value for this subscriber. */
+    mme_ue_set_apn_oi_replacement(
+            mme_ue, subscription_data->apn_oi_replacement);
+
     mme_session_remove_all(mme_ue);
 
     num_of_session = mme_ue_session_from_slice_data(mme_ue, slice_data);
@@ -235,6 +241,19 @@ uint8_t mme_s6a_handle_idr(
     if (idr_message->subdatamask & OGS_DIAM_S6A_SUBDATA_UEAMBR) {
         memcpy(&mme_ue->ambr, &subscription_data->ambr, sizeof(ogs_bitrate_t));
     }
+
+    /*
+     * TS 29.272 7.3.2: the UE-level APN-OI-Replacement is present in an
+     * IDR only when it has been added or modified, so an absent AVP means
+     * "unchanged" here - unlike the ULA, where it means "none".
+     *
+     * Deletion is signalled by bit 10 of Subscription-Data-Deletion,
+     * which this MME does not parse yet: a deleted UE-level value is
+     * therefore only picked up at the next Update Location.
+     */
+    if (subscription_data->apn_oi_replacement)
+        mme_ue_set_apn_oi_replacement(
+                mme_ue, subscription_data->apn_oi_replacement);
 
     if (idr_message->subdatamask & OGS_DIAM_S6A_SUBDATA_APN_CONFIG) {
         ogs_assert(subscription_data->num_of_slice == 1);
@@ -397,6 +416,13 @@ static uint8_t mme_ue_session_from_slice_data(mme_ue_t *mme_ue,
             ogs_assert(mme_ue->session[i].name);
         }
 
+        /* APN-level APN-OI-Replacement (TS 29.272 7.3.32) */
+        if (slice_data->session[i].apn_oi_replacement) {
+            mme_ue->session[i].apn_oi_replacement =
+                ogs_strdup(slice_data->session[i].apn_oi_replacement);
+            ogs_assert(mme_ue->session[i].apn_oi_replacement);
+        }
+
         mme_ue->session[i].context_identifier =
             slice_data->session[i].context_identifier;
 
@@ -409,9 +435,15 @@ static uint8_t mme_ue_session_from_slice_data(mme_ue_t *mme_ue,
         } else {
             ogs_error("Invalid PDN_TYPE[%d]",
                 slice_data->session[i].session_type);
+            /* This entry is not counted in the return value, so
+             * mme_session_remove_all() will never free it */
             if (mme_ue->session[i].name) {
                 ogs_free(mme_ue->session[i].name);
                 mme_ue->session[i].name = NULL;
+            }
+            if (mme_ue->session[i].apn_oi_replacement) {
+                ogs_free(mme_ue->session[i].apn_oi_replacement);
+                mme_ue->session[i].apn_oi_replacement = NULL;
             }
             break;
         }

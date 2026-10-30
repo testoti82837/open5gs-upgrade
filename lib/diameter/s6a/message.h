@@ -135,6 +135,7 @@ extern struct dict_object *ogs_diam_s6a_subscribed_rau_tau_timer;
 extern struct dict_object *ogs_diam_s6a_context_identifier;
 extern struct dict_object *ogs_diam_s6a_all_apn_configuration_included_indicator;
 extern struct dict_object *ogs_diam_s6a_apn_configuration;
+extern struct dict_object *ogs_diam_s6a_apn_oi_replacement;
 extern struct dict_object *ogs_diam_s6a_max_bandwidth_ul;
 extern struct dict_object *ogs_diam_s6a_max_bandwidth_dl;
 extern struct dict_object *ogs_diam_s6a_pdn_type;

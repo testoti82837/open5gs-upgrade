@@ -52,6 +52,140 @@ static void dns_select_test_apn_fqdn(abts_case *tc, void *data)
             mme_dns_build_apn_fqdn(buf, 16, "internet", &id));
 }
 
+static void dns_select_test_apn_fqdn_from_oi(abts_case *tc, void *data)
+{
+    char buf[MME_DNS_MAX_FQDN_LEN+1];
+
+    /* TS 23.003 19.4.2.2 EXAMPLE 2 */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "province1.mnc015.mcc234.gprs"));
+    ABTS_STR_EQUAL(tc,
+            "internet.province1.apn.epc.mnc015.mcc234.3gppnetwork.org", buf);
+
+    /* No extra label: same shape as the default APN-OI */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mnc015.mcc234.gprs"));
+    ABTS_STR_EQUAL(tc,
+            "internet.apn.epc.mnc015.mcc234.3gppnetwork.org", buf);
+
+    /* TS 23.003 9.1.2 EXAMPLE 2: several preceding labels */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "ims",
+            "ggsn-cluster-A.provinceB.mnc012.mcc345.gprs"));
+    ABTS_STR_EQUAL(tc, "ims.ggsn-cluster-A.provinceB.apn.epc."
+            "mnc012.mcc345.3gppnetwork.org", buf);
+
+    /* TS 23.003 19.4.2.1: case is not significant in an FQDN, so an HSS
+     * provisioning uppercase labels must still be accepted */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "MNC015.MCC234.GPRS"));
+    ABTS_STR_EQUAL(tc,
+            "internet.apn.epc.MNC015.MCC234.3gppnetwork.org", buf);
+
+    /* A preceding label that looks like "mnc<NNN>" must not shift the
+     * split point: the LAST mnc/mcc/gprs triple anchors it */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mnc999.mnc015.mcc234.gprs"));
+    ABTS_STR_EQUAL(tc,
+            "internet.mnc999.apn.epc.mnc015.mcc234.3gppnetwork.org", buf);
+
+    /* Rejected: anything that is not [<label>.]*mnc<NNN>.mcc<NNN>.gprs */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mnc015.mcc234.3gppnetwork.org"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mnc15.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mncabc.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "mnc015.mcc234.gprs.evil.com"));
+    /* empty label */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "a..mnc015.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", ".mnc015.mcc234.gprs"));
+    /* DNS-illegal characters, including the query-name separator itself */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "a_b.mnc015.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "a b.mnc015.mcc234.gprs"));
+    /* label must start and end alphanumeric */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "-ab.mnc015.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", "ab-.mnc015.mcc234.gprs"));
+
+    /* Missing or empty inputs */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), NULL, "mnc015.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "", "mnc015.mcc234.gprs"));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", NULL));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, sizeof(buf), "internet", ""));
+
+    /* Output overflow is an error, never a truncated query name */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_build_apn_fqdn_from_oi(
+            buf, 16, "internet", "province1.mnc015.mcc234.gprs"));
+}
+
+static void dns_select_test_home_plmn(abts_case *tc, void *data)
+{
+    ogs_plmn_id_t known[4];
+    ogs_plmn_id_t home;
+
+    known[0] = plmn(1, 1, 2);       /* 00101  */
+    known[1] = plmn(310, 26, 2);    /* 31026  */
+    known[2] = plmn(310, 260, 3);   /* 310260 */
+    known[3] = plmn(234, 15, 2);    /* 23415  */
+
+    /* Exact 2-digit MNC */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_home_plmn_from_imsi(
+            "001010000000001", known, 4, &home));
+    ABTS_TRUE(tc, memcmp(&home, &known[0], sizeof(home)) == 0);
+
+    /* 310260... matches both 310-26 and 310-260: the longer wins */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_home_plmn_from_imsi(
+            "310260123456789", known, 4, &home));
+    ABTS_TRUE(tc, memcmp(&home, &known[2], sizeof(home)) == 0);
+
+    /* 310261... can only be the 2-digit reading */
+    ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_home_plmn_from_imsi(
+            "310261123456789", known, 4, &home));
+    ABTS_TRUE(tc, memcmp(&home, &known[1], sizeof(home)) == 0);
+
+    /* Order of the provisioned list must not matter */
+    {
+        ogs_plmn_id_t swapped[2];
+        swapped[0] = known[2];
+        swapped[1] = known[1];
+        ABTS_INT_EQUAL(tc, OGS_OK, mme_dns_home_plmn_from_imsi(
+                "310260123456789", swapped, 2, &home));
+        ABTS_TRUE(tc, memcmp(&home, &known[2], sizeof(home)) == 0);
+    }
+
+    /* No provisioned PLMN matches: the caller must fall back */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            "208010000000001", known, 4, &home));
+
+    /* Degenerate inputs */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            NULL, known, 4, &home));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            "", known, 4, &home));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            "001010000000001", known, 0, &home));
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            "001010000000001", NULL, 4, &home));
+
+    /* An IMSI shorter than the PLMN digits must not match on a prefix of
+     * the PLMN: "0010" is not PLMN 001-01 */
+    ABTS_INT_EQUAL(tc, OGS_ERROR, mme_dns_home_plmn_from_imsi(
+            "0010", known, 4, &home));
+}
+
 static void dns_select_test_tai_fqdn(abts_case *tc, void *data)
 {
     char buf[MME_DNS_MAX_FQDN_LEN+1];
@@ -273,6 +407,8 @@ abts_suite *test_mme_dns_select(abts_suite *suite)
     suite = ADD_SUITE(suite)
 
     abts_run_test(suite, dns_select_test_apn_fqdn, NULL);
+    abts_run_test(suite, dns_select_test_apn_fqdn_from_oi, NULL);
+    abts_run_test(suite, dns_select_test_home_plmn, NULL);
     abts_run_test(suite, dns_select_test_tai_fqdn, NULL);
     abts_run_test(suite, dns_select_test_service_match, NULL);
     abts_run_test(suite, dns_select_test_proto_decide, NULL);

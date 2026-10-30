@@ -136,13 +136,26 @@ mme:
 #    NAPTR -> SRV -> A / NAPTR -> A lookups. On any DNS failure the MME
 #    falls back to the static gtpc.client.sgwc/smf configuration above.
 #
-#    LIMITATION - ROAMING SUBSCRIBERS: the APN-FQDN is always built with
-#    the SERVING PLMN. For a roaming subscriber (IMSI PLMN differs from
-#    the serving PLMN) the home-PLMN APN-OI required to locate the home
-#    PGW over S8 (GSMA IR.88) is NOT derived yet. DNS-based PGW selection
-#    therefore only works for such subscribers if the serving operator
-#    provisions x-s8-gtp records for the APN in its own DNS zone;
-#    otherwise the MME falls back to the static PGW configuration.
+#    ROAMING SUBSCRIBERS (S8 home-routed, GSMA IR.88): the APN-OI used to
+#    build the APN-FQDN is chosen per 3GPP TS 23.003 9.1.2, in this order:
+#
+#      1. the APN-OI-Replacement received over S6a - the APN-level value
+#         (APN-Configuration) first, the UE-level one (Subscription-Data)
+#         second, per TS 29.272 7.3.35;
+#      2. the HOME PLMN of the subscriber, for a home-routed session;
+#      3. the SERVING PLMN, when the session is locally broken out in the
+#         VPLMN (`protocol: s5` below) - in that case the replacement
+#         field "shall be ignored", as the spec requires.
+#
+#    The IMSI does not say whether its MNC is 2 or 3 digits, so the home
+#    PLMN is read from the PLMN IDs this MME has been given: the `hss_map`
+#    entry matching the subscriber first, then the served PLMNs, longest
+#    match winning. An inbound roamer therefore needs an `hss_map` entry
+#    for its home PLMN - which an S8 roaming agreement requires anyway,
+#    since S6a has to reach the home HSS. Without one the APN-FQDN is
+#    built with the serving PLMN as before, a warning is logged and the
+#    `mme_dns_home_plmn_unknown` counter is incremented.
+#
 #    SGW selection (TAI-FQDN, serving PLMN) is unaffected.
 #
 #    Other limitations: A records only (no AAAA/IPv6 gateways), RFC 2782
