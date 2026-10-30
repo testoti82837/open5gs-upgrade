@@ -654,6 +654,18 @@ typedef struct ogs_session_s {
     uint32_t context_identifier; /* EPC */
     bool default_dnn_indicator; /* 5GC */
 
+    /*
+     * APN-level APN-OI-Replacement (S6a APN-Configuration, TS 29.272
+     * 7.3.32): the domain name that replaces the APN-OI when the MME
+     * builds the APN-FQDN for DNS-based PGW selection. Applies to the
+     * non-roaming and home-routed roaming cases only; it is ignored when
+     * a VPLMN PGW is selected (TS 23.003 9.1.2). Takes priority over the
+     * UE-level value in ogs_subscription_data_t.
+     *
+     * Format: [<label>.]*mnc<MNC>.mcc<MCC>.gprs
+     */
+    char *apn_oi_replacement;
+
     uint8_t charging_characteristics[OGS_CHRGCHARS_LEN];
     bool charging_characteristics_presence;
 
@@ -984,6 +996,13 @@ typedef struct ogs_subscription_data_s {
     char *mme_host;
     char *mme_realm;
     bool purge_flag;
+
+    /*
+     * UE-level APN-OI-Replacement (S6a Subscription-Data, TS 29.272
+     * 7.3.32). Used only when the APN configuration does not carry its
+     * own value. See ogs_session_t.apn_oi_replacement.
+     */
+    char *apn_oi_replacement;
 } ogs_subscription_data_t;
 
 void ogs_subscription_data_free(ogs_subscription_data_t *subscription_data);

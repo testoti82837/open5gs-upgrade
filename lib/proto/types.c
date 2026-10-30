@@ -1132,6 +1132,8 @@ void ogs_subscription_data_free(ogs_subscription_data_t *subscription_data)
         ogs_free(subscription_data->mme_host);
     if (subscription_data->mme_realm)
         ogs_free(subscription_data->mme_realm);
+    if (subscription_data->apn_oi_replacement)
+        ogs_free(subscription_data->apn_oi_replacement);
 
     for (i = 0; i < subscription_data->num_of_slice; i++) {
         ogs_slice_data_t *slice_data = &subscription_data->slice[i];
@@ -1139,6 +1141,8 @@ void ogs_subscription_data_free(ogs_subscription_data_t *subscription_data)
         for (j = 0; j < slice_data->num_of_session; j++) {
             if (slice_data->session[j].name)
                 ogs_free(slice_data->session[j].name);
+            if (slice_data->session[j].apn_oi_replacement)
+                ogs_free(slice_data->session[j].apn_oi_replacement);
         }
 
         slice_data->num_of_session = 0;

@@ -993,6 +993,11 @@ struct mme_ue_s {
      * in subsequent requests as per 3GPP TS 29.272 clause 7.1.6. */
     char            *hss_host;
     char            *hss_realm;
+
+    /* UE-level APN-OI-Replacement from the S6a Subscription-Data
+     * (TS 29.272 7.3.32). Used to build the APN-FQDN for DNS-based PGW
+     * selection when the APN configuration carries no value of its own. */
+    char            *apn_oi_replacement;
 };
 
 #define MME_UE_REMOVE_WITH_PAGING_FAIL(__mME) \
@@ -1253,6 +1258,11 @@ void mme_ue_set_hss_identity(mme_ue_t *mme_ue,
         const uint8_t *host, size_t host_len,
         const uint8_t *realm, size_t realm_len);
 void mme_ue_clear_hss_identity(mme_ue_t *mme_ue);
+
+/* Replace the UE-level APN-OI-Replacement (TS 29.272 7.3.2: a received
+ * value overwrites the stored one). NULL or "" clears it. */
+void mme_ue_set_apn_oi_replacement(
+        mme_ue_t *mme_ue, const char *apn_oi_replacement);
 
 mme_enb_t *mme_enb_add(ogs_sock_t *sock, ogs_sockaddr_t *addr);
 int mme_enb_remove(mme_enb_t *enb);

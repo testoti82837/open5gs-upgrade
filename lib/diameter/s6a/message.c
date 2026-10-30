@@ -63,6 +63,7 @@ struct dict_object *ogs_diam_s6a_subscribed_rau_tau_timer = NULL;
 struct dict_object *ogs_diam_s6a_context_identifier = NULL;
 struct dict_object *ogs_diam_s6a_all_apn_configuration_included_indicator = NULL;
 struct dict_object *ogs_diam_s6a_apn_configuration = NULL;
+struct dict_object *ogs_diam_s6a_apn_oi_replacement = NULL;
 struct dict_object *ogs_diam_s6a_max_bandwidth_ul = NULL;
 struct dict_object *ogs_diam_s6a_max_bandwidth_dl = NULL;
 struct dict_object *ogs_diam_s6a_pdn_type = NULL;
@@ -156,6 +157,7 @@ int ogs_diam_s6a_init(void)
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "Context-Identifier", &ogs_diam_s6a_context_identifier);
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "All-APN-Configurations-Included-Indicator", &ogs_diam_s6a_all_apn_configuration_included_indicator);
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "APN-Configuration", &ogs_diam_s6a_apn_configuration);
+    CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "APN-OI-Replacement", &ogs_diam_s6a_apn_oi_replacement);
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "PDN-Type", &ogs_diam_s6a_pdn_type);
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "3GPP-Charging-Characteristics", &ogs_diam_s6a_3gpp_charging_characteristics);
     CHECK_dict_search(DICT_AVP, AVP_BY_NAME_ALL_VENDORS, "Served-Party-IP-Address", &ogs_diam_s6a_served_party_ip_address);

@@ -89,6 +89,32 @@ int mme_dns_build_apn_fqdn(char *buf, size_t sz,
         const char *apn_ni, const ogs_plmn_id_t *plmn_id);
 
 /*
+ * APN-FQDN built from an S6a APN-OI Replacement field instead of a PLMN ID
+ * (TS 23.003 19.4.2.2, second paragraph): "apn.epc." is inserted before the
+ * "mnc<MNC>" label and the trailing ".gprs" becomes ".3gppnetwork.org".
+ *
+ *   apn_ni "internet" + replacement "province1.mnc015.mcc234.gprs"
+ *     -> "internet.province1.apn.epc.mnc015.mcc234.3gppnetwork.org"
+ *
+ * The replacement field is rejected (OGS_ERROR) unless it has the shape
+ * [<label>.]*mnc<3 digits>.mcc<3 digits>.gprs with DNS-legal labels, so a
+ * misprovisioned HSS cannot inject an arbitrary query name. Comparisons on
+ * the mnc/mcc/gprs labels are case-insensitive.
+ */
+int mme_dns_build_apn_fqdn_from_oi(char *buf, size_t sz,
+        const char *apn_ni, const char *apn_oi_replacement);
+
+/*
+ * Home PLMN of an IMSI, resolved against the PLMN IDs the operator has
+ * provisioned (`known`, `num_known`): the entry whose MCC+MNC digits are
+ * the longest prefix of the IMSI wins, since the IMSI itself does not say
+ * whether its MNC is 2 or 3 digits. Writes `home` and returns OGS_OK, or
+ * returns OGS_ERROR when no provisioned PLMN matches.
+ */
+int mme_dns_home_plmn_from_imsi(const char *imsi_bcd,
+        const ogs_plmn_id_t *known, int num_known, ogs_plmn_id_t *home);
+
+/*
  * TAI-FQDN (TS 23.003 19.4.2.3):
  *   tac-lb<TAC-low-byte>.tac-hb<TAC-high-byte>.tac.epc
  *       .mnc<MNC>.mcc<MCC>.3gppnetwork.org

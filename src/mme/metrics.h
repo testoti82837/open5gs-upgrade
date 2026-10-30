@@ -15,6 +15,7 @@ typedef enum mme_metric_type_global_s {
     MME_METR_GLOB_CTR_DNS_QUERY_TOTAL,
     MME_METR_GLOB_CTR_DNS_QUERY_FAILED,
     MME_METR_GLOB_CTR_DNS_CACHE_HIT,
+    MME_METR_GLOB_CTR_DNS_HOME_PLMN_UNKNOWN,
     _MME_METR_GLOB_MAX,
 } mme_metric_type_global_t;
 extern ogs_metrics_inst_t *mme_metrics_inst_global[_MME_METR_GLOB_MAX];

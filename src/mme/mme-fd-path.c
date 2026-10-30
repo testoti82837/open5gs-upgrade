@@ -323,6 +323,26 @@ static int mme_s6a_subscription_data_from_avp(struct avp *avp,
         *subdatamask = (*subdatamask | OGS_DIAM_S6A_SUBDATA_RAU_TAU_TIMER);
     }
 
+    /* AVP: 'APN-OI-Replacement'(1427)
+     * UE-level APN-OI-Replacement. TS 29.272 7.3.2 requires the MME to
+     * replace any stored value with the received one, so the previous
+     * string is released first; absence of the AVP leaves the stored
+     * value untouched, deletion is signalled separately through the
+     * Subscription-Data-Deletion flags.
+     * Reference: 3GPP TS 29.272 7.3.32, 7.3.2
+     */
+    ret = fd_avp_search_avp(avp, ogs_diam_s6a_apn_oi_replacement, &avpch1);
+    ogs_assert(ret == 0);
+    if (avpch1) {
+        ret = fd_msg_avp_hdr(avpch1, &hdr);
+        ogs_assert(ret == 0);
+        if (subscription_data->apn_oi_replacement)
+            ogs_free(subscription_data->apn_oi_replacement);
+        subscription_data->apn_oi_replacement = ogs_strndup(
+                (char*)hdr->avp_value->os.data, hdr->avp_value->os.len);
+        ogs_assert(subscription_data->apn_oi_replacement);
+    }
+
     /* AVP: 'APN-Configuration-Profile'(1429)
      * The APN-Configuration-Profile AVP shall contain the information
      * related to the user's subscribed APN configurations for EPS. The
@@ -430,6 +450,26 @@ static int mme_s6a_subscription_data_from_avp(struct avp *avp,
                 } else {
                     ogs_error("no_Context-Identifier");
                     error++;
+                }
+
+                /* AVP: 'APN-OI-Replacement'(1427)
+                 * The domain name that replaces the APN-OI when the
+                 * APN-FQDN for DNS-based PGW selection is built, for the
+                 * non-roaming and home-routed roaming cases. The APN-level
+                 * value has higher priority than the UE-level one.
+                 * Optional: absence is not an error.
+                 * Reference: 3GPP TS 29.272 7.3.32, 7.3.35
+                 */
+                ret = fd_avp_search_avp(avpch2,
+                    ogs_diam_s6a_apn_oi_replacement, &avpch3);
+                ogs_assert(ret == 0);
+                if (avpch3) {
+                    ret = fd_msg_avp_hdr(avpch3, &hdr);
+                    ogs_assert(ret == 0);
+                    session->apn_oi_replacement = ogs_strndup(
+                                    (char*)hdr->avp_value->os.data,
+                                    hdr->avp_value->os.len);
+                    ogs_assert(session->apn_oi_replacement);
                 }
 
                 /* AVP: 'PDN-Type'(1456)

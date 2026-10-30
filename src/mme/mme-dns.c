@@ -868,6 +868,131 @@ ogs_sockaddr_t *mme_dns_sess_pgw_addr(mme_sess_t *sess)
 }
 
 /*****************************************************************
+ * APN-FQDN for the PGW leg (TS 23.003 9.1.2, 19.4.2.2)
+ *****************************************************************/
+
+/*
+ * Home PLMN of this UE.
+ *
+ * The hss_map entry selected for the subscriber is authoritative when
+ * there is one: it is the PLMN ID the operator provisioned for exactly
+ * these IMSI digits, so it carries the MNC length the IMSI does not. A
+ * home-routed S8 session presupposes such an entry anyway, because S6a
+ * has to reach the home HSS first.
+ *
+ * Failing that, the IMSI is matched against the PLMNs this MME serves.
+ * That is not dead code for a roamer: in a shared RAN this MME may serve
+ * PLMN A on the current TAI and PLMN B elsewhere, and a PLMN-B subscriber
+ * attaching on a PLMN-A tracking area is home-routed towards PLMN B.
+ * (Re-scanning hssmap_list here would be pointless - if any entry
+ * prefix-matched the IMSI, mme_ue->hssmap would be set.)
+ */
+static int home_plmn_of(const mme_ue_t *mme_ue, ogs_plmn_id_t *home)
+{
+    ogs_plmn_id_t known[OGS_MAX_NUM_OF_SERVED_GUMMEI *
+        OGS_MAX_NUM_OF_PLMN_PER_MME];
+    int num_known = 0, i, j;
+
+    ogs_assert(mme_ue);
+    ogs_assert(home);
+
+    if (mme_ue->hssmap) {
+        *home = mme_ue->hssmap->plmn_id;
+        return OGS_OK;
+    }
+
+    for (i = 0; i < mme_self()->num_of_served_gummei; i++) {
+        const served_gummei_t *gummei = &mme_self()->served_gummei[i];
+
+        for (j = 0; j < gummei->num_of_plmn_id; j++) {
+            if (num_known >= (int)(sizeof(known)/sizeof(known[0])))
+                break;
+            known[num_known++] = gummei->plmn_id[j];
+        }
+    }
+
+    return mme_dns_home_plmn_from_imsi(
+            mme_ue->imsi_bcd, known, num_known, home);
+}
+
+/*
+ * APN-FQDN of the PGW to look up, per TS 23.003 9.1.2:
+ *
+ * - Home-routed (S8) or non-roaming: the APN-OI is the HOME network's.
+ *   An APN-OI Replacement received over S6a replaces it, APN-level value
+ *   first, UE-level value second (TS 29.272 7.3.35).
+ * - VPLMN PGW selected for a roaming subscriber (local breakout, i.e. the
+ *   deployment forced `dns.protocol: s5`): the APN-OI is built from the
+ *   SERVING PLMN and the APN-OI Replacement "shall be ignored".
+ *
+ * `proto` is the already-decided S5/S8 value, including any configured
+ * override, so the two cases are distinguished by comparing it with what
+ * the IMSI alone would have given.
+ */
+static int build_pgw_fqdn(char *buf, size_t sz, const mme_ue_t *mme_ue,
+        const ogs_session_t *session, mme_dns_proto_e proto)
+{
+    bool is_roamer, vplmn_selected;
+    const char *replacement = NULL;
+    ogs_plmn_id_t home;
+
+    ogs_assert(buf);
+    ogs_assert(mme_ue);
+    ogs_assert(session);
+
+    is_roamer = mme_dns_decide_proto(mme_ue->imsi_bcd,
+            &mme_ue->tai.plmn_id, MME_DNS_PROTO_AUTO) == MME_DNS_PROTO_S8;
+    vplmn_selected = is_roamer && proto != MME_DNS_PROTO_S8;
+
+    if (vplmn_selected) {
+        ogs_debug("[%s] APN-FQDN: local breakout, serving PLMN APN-OI",
+                mme_ue->imsi_bcd);
+        return mme_dns_build_apn_fqdn(
+                buf, sz, session->name, &mme_ue->tai.plmn_id);
+    }
+
+    replacement = session->apn_oi_replacement ?
+        session->apn_oi_replacement : mme_ue->apn_oi_replacement;
+
+    if (replacement) {
+        if (mme_dns_build_apn_fqdn_from_oi(
+                    buf, sz, session->name, replacement) == OGS_OK)
+            return OGS_OK;
+
+        /* A malformed replacement field is the HSS's error, not the
+         * subscriber's: log it and fall through to the default APN-OI
+         * rather than failing the PDN connection. */
+        ogs_warn("[%s] Ignoring malformed APN-OI-Replacement [%s]",
+                mme_ue->imsi_bcd, replacement);
+    }
+
+    if (!is_roamer)
+        return mme_dns_build_apn_fqdn(
+                buf, sz, session->name, &mme_ue->tai.plmn_id);
+
+    if (home_plmn_of(mme_ue, &home) != OGS_OK) {
+        /*
+         * No provisioned PLMN ID matches these IMSI digits, so the MNC
+         * length - and with it the home APN-OI - cannot be read out of
+         * the IMSI. Keep querying with the serving PLMN: that is what a
+         * deployment publishing x-s8-gtp records for visitors in its own
+         * zone expects, and a failed lookup still falls back to the
+         * static PGW configuration.
+         */
+        ogs_warn("[%s] Home PLMN not derivable from IMSI; "
+                "APN-FQDN built with the serving PLMN. "
+                "Add the home PLMN to mme.hss_map to locate the home PGW "
+                "over S8", mme_ue->imsi_bcd);
+        mme_metrics_inst_global_inc(
+                MME_METR_GLOB_CTR_DNS_HOME_PLMN_UNKNOWN);
+        return mme_dns_build_apn_fqdn(
+                buf, sz, session->name, &mme_ue->tai.plmn_id);
+    }
+
+    return mme_dns_build_apn_fqdn(buf, sz, session->name, &home);
+}
+
+/*****************************************************************
  * Entry points
  *****************************************************************/
 
@@ -943,18 +1068,11 @@ int mme_dns_prepare(enb_ue_t *enb_ue, mme_sess_t *sess, int create_action)
     }
 
     /* PGW leg: skipped when the HSS provided a PGW address
-     * (MIP6-Agent-Info), which always takes precedence.
-     *
-     * LIMITATION: the APN-FQDN is built with the SERVING PLMN
-     * (mme_ue->tai.plmn_id). For roaming subscribers the home-PLMN
-     * APN-OI (TS 23.003 9.1.1, needs an IMSI MNC-length table) is not
-     * derived, so locating the home PGW over S8 per GSMA IR.88 only
-     * works if the serving operator provisions x-s8-gtp records for
-     * the APN in its own zone. See configs/open5gs/mme.yaml.in. */
+     * (MIP6-Agent-Info), which always takes precedence. */
     if (!sess->session->smf_ip.ipv4 && !sess->session->smf_ip.ipv6) {
         res->pgw.svc = MME_DNS_SVC_PGW;
-        if (mme_dns_build_apn_fqdn(res->pgw.fqdn, sizeof(res->pgw.fqdn),
-                    sess->session->name, &mme_ue->tai.plmn_id) == OGS_OK)
+        if (build_pgw_fqdn(res->pgw.fqdn, sizeof(res->pgw.fqdn),
+                    mme_ue, sess->session, res->proto) == OGS_OK)
             res->pgw.active = true;
     }
 

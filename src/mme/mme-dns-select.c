@@ -38,6 +38,177 @@ int mme_dns_build_apn_fqdn(char *buf, size_t sz,
     return OGS_OK;
 }
 
+/*
+ * One label of an APN-OI Replacement field. RFC 1035 preferred syntax as
+ * narrowed by TS 23.003 19.4.2.1: letters, digits and hyphen, first and
+ * last character alphanumeric, 63 octets max.
+ */
+static bool label_is_valid(const char *s, size_t len)
+{
+    size_t i;
+
+    if (len == 0 || len > 63)
+        return false;
+    if (!isalnum((unsigned char)s[0]) || !isalnum((unsigned char)s[len-1]))
+        return false;
+
+    for (i = 0; i < len; i++) {
+        if (!isalnum((unsigned char)s[i]) && s[i] != '-')
+            return false;
+    }
+
+    return true;
+}
+
+/*
+ * "mnc<3 digits>" / "mcc<3 digits>", case-insensitive: the DNS is
+ * case-insensitive and TS 23.003 19.4.2.1 makes case non-significant,
+ * so an HSS that provisions "MNC015" must still be accepted.
+ */
+static bool label_is_mxc(const char *s, size_t len, const char *tag)
+{
+    int i;
+
+    if (len != 6)
+        return false;
+    if (strncasecmp(s, tag, 3) != 0)
+        return false;
+
+    for (i = 3; i < 6; i++) {
+        if (!isdigit((unsigned char)s[i]))
+            return false;
+    }
+
+    return true;
+}
+
+int mme_dns_build_apn_fqdn_from_oi(char *buf, size_t sz,
+        const char *apn_ni, const char *apn_oi_replacement)
+{
+    const char *p = NULL, *dot = NULL;
+    const char *mnc_label = NULL;      /* start of the "mnc<MNC>" label */
+    size_t oi_len, prefix_len;
+    int rc;
+
+    ogs_assert(buf);
+
+    if (!apn_ni || !apn_ni[0])
+        return OGS_ERROR;
+    if (!apn_oi_replacement || !apn_oi_replacement[0])
+        return OGS_ERROR;
+
+    /*
+     * Expected shape (TS 23.003 9.1.2):
+     *     [<label>.]* mnc<MNC>.mcc<MCC>.gprs
+     * The whole field is attacker-influenced only through the HSS, but it
+     * ends up in a DNS query name, so it is validated label by label
+     * instead of being pasted in.
+     */
+    oi_len = strlen(apn_oi_replacement);
+    if (oi_len < sizeof("mnc000.mcc000.gprs") - 1)
+        return OGS_ERROR;
+
+    for (p = apn_oi_replacement; ; p = dot + 1) {
+        size_t len;
+
+        dot = strchr(p, '.');
+        len = dot ? (size_t)(dot - p) : strlen(p);
+
+        if (!label_is_valid(p, len))
+            return OGS_ERROR;
+
+        /*
+         * The trailing three labels must be mnc<MNC>.mcc<MCC>.gprs.
+         * Anchor on the LAST such triple so that an operator label that
+         * itself looks like "mnc123" cannot shift the split point.
+         */
+        if (label_is_mxc(p, len, "mnc") && dot) {
+            const char *rest = dot + 1;
+
+            /* exactly "mcc<MCC>.gprs" must remain */
+            if (strlen(rest) == sizeof("mcc000.gprs") - 1 &&
+                label_is_mxc(rest, 6, "mcc") &&
+                strcasecmp(rest + 6, ".gprs") == 0)
+                mnc_label = p;
+        }
+
+        if (!dot)
+            break;
+    }
+
+    if (!mnc_label)
+        return OGS_ERROR;
+
+    /* Labels preceding "mnc<MNC>", dot included, e.g. "province1." */
+    prefix_len = (size_t)(mnc_label - apn_oi_replacement);
+
+    /*
+     * TS 23.003 19.4.2.2: insert "apn.epc." between "mnc<MNC>" and its
+     * preceding label, and replace the trailing ".gprs" with
+     * ".3gppnetwork.org".
+     *
+     *   internet + province1.mnc015.mcc234.gprs
+     *     -> internet.province1.apn.epc.mnc015.mcc234.3gppnetwork.org
+     */
+    rc = snprintf(buf, sz, "%s.%.*sapn.epc.%.*s.3gppnetwork.org",
+            apn_ni, (int)prefix_len, apn_oi_replacement,
+            (int)(oi_len - prefix_len - (sizeof(".gprs") - 1)), mnc_label);
+    if (rc <= 0 || (size_t)rc >= sz)
+        return OGS_ERROR;
+
+    return OGS_OK;
+}
+
+int mme_dns_home_plmn_from_imsi(const char *imsi_bcd,
+        const ogs_plmn_id_t *known, int num_known, ogs_plmn_id_t *home)
+{
+    int i;
+    int best = -1;
+    size_t best_len = 0;
+
+    ogs_assert(home);
+
+    if (!imsi_bcd || !imsi_bcd[0] || !known || num_known <= 0)
+        return OGS_ERROR;
+
+    /*
+     * The IMSI carries no MNC-length marker, so a 2-digit and a 3-digit
+     * MNC reading of the same digits are both syntactically valid. The
+     * ambiguity is resolved from the PLMN IDs the operator actually
+     * provisioned (served PLMNs and hss_map entries), which do carry
+     * mnc_len. The LONGEST match wins: when both 310-26 and 310-260 are
+     * provisioned, an IMSI starting 310260 belongs to 310-260.
+     */
+    for (i = 0; i < num_known; i++) {
+        char prefix[OGS_PLMNIDSTRLEN];
+        size_t len;
+        int rc;
+
+        rc = snprintf(prefix, sizeof(prefix), "%03d%0*d",
+                ogs_plmn_id_mcc(&known[i]),
+                ogs_plmn_id_mnc_len(&known[i]),
+                ogs_plmn_id_mnc(&known[i]));
+        if (rc <= 0 || (size_t)rc >= sizeof(prefix))
+            continue;
+
+        len = strlen(prefix);
+        if (len <= best_len)
+            continue;
+        if (strncmp(imsi_bcd, prefix, len) != 0)
+            continue;
+
+        best = i;
+        best_len = len;
+    }
+
+    if (best < 0)
+        return OGS_ERROR;
+
+    *home = known[best];
+
+    return OGS_OK;
+}
+
 int mme_dns_build_tai_fqdn(char *buf, size_t sz, const ogs_eps_tai_t *tai)
 {
     int rc;
